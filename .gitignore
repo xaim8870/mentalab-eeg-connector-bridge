@@ -25,3 +25,10 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+
+
+# EEG recordings
+recordings/
+# EEG recordings
+recordings/

@@ -16,7 +16,7 @@ from .logging_config import (
     configure_logging,
 )
 
-from .mentalab_device import (
+from .device_manager import (
     mentalab_device_manager,
 )
 
@@ -387,3 +387,31 @@ async def recording_status():
             "error"
         ],
     )
+
+# ============================================================
+# LIVE EEG
+# ============================================================
+
+@app.get("/api/eeg/live")
+async def live_eeg():
+    try:
+        return mentalab_device_manager.get_live_data()
+
+    except AttributeError:
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "Live EEG streaming is not implemented "
+                "for the active Mentalab device mode."
+            ),
+        )
+
+    except Exception as exc:
+        logger.exception(
+            "Unable to retrieve live EEG data."
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(exc),
+        )
