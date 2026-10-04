@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class MentalabDevice(BaseModel):
@@ -11,6 +11,9 @@ class MentalabDevice(BaseModel):
     channelCount: int
     samplingRate: int
     batteryPercent: Optional[int] = None
+
+    # True only when the development simulator is being used.
+    simulated: bool = False
 
 
 class HealthResponse(BaseModel):
@@ -55,6 +58,8 @@ class RecordingStatusResponse(BaseModel):
 
     filePrefix: Optional[str] = None
 
-    files: List[str] = []
+    files: List[str] = Field(
+        default_factory=list
+    )
 
     error: Optional[str] = None

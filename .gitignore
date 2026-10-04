@@ -1,8 +1,8 @@
-.env
 # Python
 __pycache__/
 *.py[cod]
 *.pyo
+.python-version
 
 # Virtual environments
 mentalab-venv/
@@ -22,8 +22,9 @@ logs/
 .env.*
 !.env.example
 
+# EEG recordings
+recordings/
+
 # OS
 .DS_Store
-Thumbs.db.python-version
-build/
-dist/
+Thumbs.db
