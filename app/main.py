@@ -47,7 +47,7 @@ logger = logging.getLogger(
 
 app = FastAPI(
     title="Mentalab EEG Bridge",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 
@@ -119,7 +119,7 @@ async def root():
     return {
         "ok": True,
         "service": "mentalab-bridge",
-        "version": "0.2.0",
+        "version": "0.3.0",
     }
 
 
