@@ -3,16 +3,19 @@
 import asyncio
 import logging
 import os
+import threading
 import time
 import uuid
 
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import explorepy
 
 from dotenv import load_dotenv
+from explorepy.explore import TOPICS
 
 from .models import MentalabDevice
 
@@ -51,12 +54,20 @@ DEFAULT_SAMPLING_RATE = int(
     )
 )
 
+LIVE_WINDOW_SECONDS = float(
+    os.getenv(
+        "MENTALAB_LIVE_WINDOW_SECONDS",
+        "2",
+    )
+)
+
 
 # ============================================================
 # DEVICE MANAGER
 # ============================================================
 
 class MentalabDeviceManager:
+
     def __init__(self):
         logger.info(
             "Initializing MentalabDeviceManager"
@@ -78,6 +89,11 @@ class MentalabDeviceManager:
         )
 
         logger.info(
+            "Live EEG window: %s seconds",
+            LIVE_WINDOW_SECONDS,
+        )
+
+        logger.info(
             "Recording directory: %s",
             RECORDINGS_DIR,
         )
@@ -91,7 +107,10 @@ class MentalabDeviceManager:
             explorepy.Explore
         ] = None
 
-        # Recording session state
+        # ----------------------------------------------------
+        # Recording state
+        # ----------------------------------------------------
+
         self.recording_id: Optional[str] = None
         self.recording_started_at: Optional[str] = None
         self.recording_stopped_at: Optional[str] = None
@@ -105,6 +124,43 @@ class MentalabDeviceManager:
         ] = None
 
         self.recording_error: Optional[str] = None
+
+        # ----------------------------------------------------
+        # Live EEG state
+        # ----------------------------------------------------
+
+        self.live_window_seconds = (
+            LIVE_WINDOW_SECONDS
+        )
+
+        self.live_buffer_size = max(
+            1,
+            int(
+                DEFAULT_SAMPLING_RATE
+                * LIVE_WINDOW_SECONDS
+            ),
+        )
+
+        self.live_buffers = [
+            deque(
+                maxlen=self.live_buffer_size
+            )
+            for _ in range(
+                DEFAULT_CHANNEL_COUNT
+            )
+        ]
+
+        self.live_lock = threading.Lock()
+
+        self.live_subscribed = False
+
+        self.live_sample_index = 0
+
+        self.live_updated_at: Optional[
+            str
+        ] = None
+
+        self.live_error: Optional[str] = None
 
     # ========================================================
     # STATUS
@@ -227,6 +283,31 @@ class MentalabDeviceManager:
                 batteryPercent=None,
             )
 
+            self._reset_live_data()
+
+            try:
+                self._subscribe_live_eeg()
+
+            except Exception:
+                logger.exception(
+                    "Device connected, but live EEG "
+                    "subscription could not be started."
+                )
+
+                try:
+                    await asyncio.to_thread(
+                        explorer.disconnect
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to disconnect after "
+                        "live EEG subscription failure."
+                    )
+
+                self._clear_connection_state()
+
+                raise
+
             logger.info(
                 "DEVICE CONNECTED: "
                 "name=%s channels=%s samplingRate=%s",
@@ -253,16 +334,293 @@ class MentalabDeviceManager:
                 str(exc),
             )
 
-            self.connected = False
-            self.recording = False
-
-            self.device = None
-            self.explorer = None
+            self._clear_connection_state()
 
             raise RuntimeError(
                 f"Unable to connect to "
                 f"{DEVICE_NAME}: {exc}"
             ) from exc
+
+    # ========================================================
+    # LIVE EEG SUBSCRIPTION
+    # ========================================================
+
+    def _subscribe_live_eeg(
+        self,
+    ) -> None:
+
+        if self.explorer is None:
+            raise RuntimeError(
+                "Cannot subscribe to live EEG because "
+                "ExplorePy is not connected."
+            )
+
+        if self.explorer.stream_processor is None:
+            raise RuntimeError(
+                "ExplorePy stream processor is not "
+                "available after connection."
+            )
+
+        if self.live_subscribed:
+            logger.debug(
+                "Live EEG subscriber is already active."
+            )
+            return
+
+        logger.info(
+            "Subscribing Compass live monitor "
+            "to ExplorePy raw_ExG stream."
+        )
+
+        self.explorer.stream_processor.subscribe(
+            callback=self._handle_exg_packet,
+            topic=TOPICS.raw_ExG,
+        )
+
+        self.live_subscribed = True
+        self.live_error = None
+
+        logger.info(
+            "Live raw_ExG subscription started."
+        )
+
+    def _unsubscribe_live_eeg(
+        self,
+    ) -> None:
+
+        explorer = self.explorer
+
+        if (
+            explorer is None
+            or explorer.stream_processor is None
+            or not self.live_subscribed
+        ):
+            self.live_subscribed = False
+            return
+
+        logger.info(
+            "Unsubscribing Compass live monitor "
+            "from ExplorePy raw_ExG stream."
+        )
+
+        try:
+            explorer.stream_processor.unsubscribe(
+                callback=self._handle_exg_packet,
+                topic=TOPICS.raw_ExG,
+            )
+
+        except Exception as exc:
+            logger.exception(
+                "Unable to unsubscribe live EEG "
+                "callback: %s",
+                exc,
+            )
+
+        finally:
+            self.live_subscribed = False
+
+    # ========================================================
+    # LIVE EEG CALLBACK
+    # ========================================================
+
+    def _handle_exg_packet(
+        self,
+        packet: Any,
+    ) -> None:
+        """
+        ExplorePy raw_ExG callback.
+
+        ExplorePy 4.3.1 may dispatch either a single
+        EEG packet or a list/tuple containing a batch
+        of EEG packets.
+        """
+
+        try:
+            packets = (
+                packet
+                if isinstance(
+                    packet,
+                    (list, tuple),
+                )
+                else [packet]
+            )
+
+            for eeg_packet in packets:
+                self._append_eeg_packet(
+                    eeg_packet
+                )
+
+        except Exception as exc:
+            self.live_error = str(exc)
+
+            logger.exception(
+                "Failed to process raw EEG packet: %s",
+                exc,
+            )
+
+    def _append_eeg_packet(
+        self,
+        packet: Any,
+    ) -> None:
+
+        data = getattr(
+            packet,
+            "data",
+            None,
+        )
+
+        if data is None:
+            try:
+                _, data = packet.get_data()
+            except Exception:
+                logger.warning(
+                    "Received raw_ExG packet without "
+                    "readable EEG data."
+                )
+                return
+
+        if data is None:
+            return
+
+        # ExplorePy EEG data is channel-major:
+        #
+        #     channels x samples
+        #
+        # Convert through basic sequence operations
+        # so this bridge does not depend on NumPy
+        # outside ExplorePy itself.
+
+        try:
+            channel_count = len(data)
+        except TypeError:
+            logger.warning(
+                "Received EEG data with unexpected "
+                "shape/type: %s",
+                type(data).__name__,
+            )
+            return
+
+        if channel_count <= 0:
+            return
+
+        usable_channels = min(
+            channel_count,
+            DEFAULT_CHANNEL_COUNT,
+        )
+
+        samples_added = 0
+
+        with self.live_lock:
+            for channel_index in range(
+                usable_channels
+            ):
+                channel_data = data[
+                    channel_index
+                ]
+
+                try:
+                    values = (
+                        channel_data.tolist()
+                        if hasattr(
+                            channel_data,
+                            "tolist",
+                        )
+                        else list(channel_data)
+                    )
+                except TypeError:
+                    values = [
+                        channel_data
+                    ]
+
+                for value in values:
+                    try:
+                        self.live_buffers[
+                            channel_index
+                        ].append(
+                            float(value)
+                        )
+                    except (
+                        TypeError,
+                        ValueError,
+                    ):
+                        continue
+
+                if channel_index == 0:
+                    samples_added = len(values)
+
+            self.live_sample_index += (
+                samples_added
+            )
+
+            self.live_updated_at = (
+                datetime.now(
+                    timezone.utc
+                ).isoformat()
+            )
+
+            self.live_error = None
+
+    # ========================================================
+    # LIVE EEG API DATA
+    # ========================================================
+
+    def get_live_data(
+        self,
+    ) -> dict:
+
+        with self.live_lock:
+            channels = []
+
+            for channel_index, buffer in enumerate(
+                self.live_buffers
+            ):
+                samples = list(buffer)
+
+                channels.append(
+                    {
+                        "channel":
+                            channel_index + 1,
+
+                        "samples":
+                            samples,
+
+                        # Real-device clinical signal-quality
+                        # thresholds are intentionally not
+                        # inferred from simulator thresholds.
+                        "quality": {
+                            "state": (
+                                "WAITING"
+                                if not samples
+                                else "GOOD"
+                            ),
+                            "score": None,
+                            "rms": None,
+                            "peakToPeak": None,
+                            "standardDeviation": None,
+                        },
+                    }
+                )
+
+            return {
+                "ok": True,
+                "streaming": (
+                    self.connected
+                    and self.live_subscribed
+                ),
+                "simulated": False,
+                "samplingRate":
+                    DEFAULT_SAMPLING_RATE,
+                "channelCount":
+                    DEFAULT_CHANNEL_COUNT,
+                "windowSeconds":
+                    self.live_window_seconds,
+                "sampleIndex":
+                    self.live_sample_index,
+                "updatedAt":
+                    self.live_updated_at,
+                "channels":
+                    channels,
+            }
 
     # ========================================================
     # DISCONNECT
@@ -298,6 +656,8 @@ class MentalabDeviceManager:
             return
 
         try:
+            self._unsubscribe_live_eeg()
+
             logger.info(
                 "Calling ExplorePy disconnect..."
             )
@@ -723,12 +1083,29 @@ class MentalabDeviceManager:
         ]
 
     # ========================================================
-    # HELPERS
+    # LIVE DATA HELPERS
+    # ========================================================
+
+    def _reset_live_data(
+        self,
+    ) -> None:
+
+        with self.live_lock:
+            for buffer in self.live_buffers:
+                buffer.clear()
+
+            self.live_sample_index = 0
+            self.live_updated_at = None
+            self.live_error = None
+
+    # ========================================================
+    # CONNECTION HELPERS
     # ========================================================
 
     def _clear_connection_state(
         self,
-    ):
+    ) -> None:
+
         logger.debug(
             "Clearing Mentalab "
             "connection state."
@@ -739,6 +1116,9 @@ class MentalabDeviceManager:
 
         self.connected = False
         self.recording = False
+        self.live_subscribed = False
+
+        self._reset_live_data()
 
 
 mentalab_device_manager = (
