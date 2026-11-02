@@ -39,6 +39,14 @@ DEVICE_STATUS_URL = (
     f"http://{BRIDGE_HOST}:{BRIDGE_PORT}/api/device/status"
 )
 
+DEVICE_CONNECT_URL = (
+    f"http://{BRIDGE_HOST}:{BRIDGE_PORT}/api/device/connect"
+)
+
+DEVICE_DISCONNECT_URL = (
+    f"http://{BRIDGE_HOST}:{BRIDGE_PORT}/api/device/disconnect"
+)
+
 COMPASS_PORTAL_URL = (
     "https://zeamhealthprovidersdashboard.netlify.app"
     "/admin/mentalab-connector"
@@ -163,6 +171,7 @@ class MentalabBridgeGUI:
 
         self.bridge_online = False
         self.device_connected = False
+        self.device_connecting = False
 
         self._build_ui()
 
@@ -274,6 +283,28 @@ class MentalabBridgeGUI:
         button_frame = Frame(
             content,
             bg="#F8F6F1",
+        )
+        self.connect_button = Button(
+            button_frame,
+            text="Connect Mentalab",
+            command=self.toggle_device_connection,
+            bg="#1E293B",
+            fg="#FFFFFF",
+            activebackground="#334155",
+            activeforeground="#FFFFFF",
+            relief="flat",
+            padx=18,
+            pady=10,
+            font=(
+                "Helvetica",
+                11,
+                "bold",
+            ),
+            cursor="hand2",
+        )
+
+        self.connect_button.pack(
+            side=LEFT
         )
 
         button_frame.pack(
@@ -548,6 +579,10 @@ class MentalabBridgeGUI:
                         )
 
                     self.device_connected = True
+                    if not self.device_connecting:
+                        self.connect_button.config(
+                            text="Disconnect Mentalab"
+                        )
 
                 else:
                     self.device_status.config(
@@ -556,6 +591,10 @@ class MentalabBridgeGUI:
                     )
 
                     self.device_connected = False
+                    if not self.device_connecting:
+                        self.connect_button.config(
+                            text="Connect Mentalab"
+                        )
 
         except Exception as exc:
             logger.debug(
@@ -571,7 +610,171 @@ class MentalabBridgeGUI:
     # ========================================================
     # ACTIONS
     # ========================================================
+    def toggle_device_connection(self):
+        if self.device_connecting:
+            return
 
+        if not self.bridge_online:
+            self.append_log(
+                "Cannot connect: local bridge is offline."
+            )
+            return
+
+        if self.device_connected:
+            self._start_device_action(
+                action="disconnect"
+            )
+        else:
+            self._start_device_action(
+                action="connect"
+            )
+
+
+    def _start_device_action(
+        self,
+        action: str,
+    ):
+        self.device_connecting = True
+
+        self.connect_button.config(
+            text=(
+                "Disconnecting..."
+                if action == "disconnect"
+                else "Connecting..."
+            ),
+            state="disabled",
+        )
+
+        self.device_status.config(
+            text=(
+                "Disconnecting..."
+                if action == "disconnect"
+                else "Connecting..."
+            ),
+            fg="#C9A84C",
+        )
+
+        self.append_log(
+            (
+                "Disconnecting Mentalab device..."
+                if action == "disconnect"
+                else "Connecting to Mentalab device..."
+            )
+        )
+
+        thread = threading.Thread(
+            target=self._device_action_worker,
+            args=(action,),
+            daemon=True,
+        )
+
+        thread.start()
+
+
+    def _device_action_worker(
+        self,
+        action: str,
+    ):
+        url = (
+            DEVICE_DISCONNECT_URL
+            if action == "disconnect"
+            else DEVICE_CONNECT_URL
+        )
+
+        try:
+            request = urllib.request.Request(
+                url,
+                method="POST",
+            )
+
+            with urllib.request.urlopen(
+                request,
+                timeout=45,
+            ) as response:
+                if response.status != 200:
+                    raise RuntimeError(
+                        f"Unexpected HTTP status: "
+                        f"{response.status}"
+                    )
+
+            self.root.after(
+                0,
+                lambda: self._device_action_finished(
+                    action=action,
+                    error=None,
+                ),
+            )
+
+        except urllib.error.HTTPError as exc:
+            try:
+                import json
+
+                payload = json.loads(
+                    exc.read().decode("utf-8")
+                )
+
+                message = payload.get(
+                    "detail",
+                    str(exc),
+                )
+
+            except Exception:
+                message = str(exc)
+
+            self.root.after(
+                0,
+                lambda message=message:
+                    self._device_action_finished(
+                        action=action,
+                        error=message,
+                    ),
+            )
+
+        except Exception as exc:
+            message = str(exc)
+
+            self.root.after(
+                0,
+                lambda message=message:
+                    self._device_action_finished(
+                        action=action,
+                        error=message,
+                    ),
+            )
+
+
+    def _device_action_finished(
+        self,
+        action: str,
+        error: str | None,
+    ):
+        self.device_connecting = False
+
+        self.connect_button.config(
+            state="normal"
+        )
+
+        if error:
+            self.append_log(
+                f"Mentalab {action} failed: {error}"
+            )
+
+            self.device_status.config(
+                text="Connection failed",
+                fg="#B45353",
+            )
+
+        else:
+            if action == "connect":
+                self.append_log(
+                    "Mentalab connection request succeeded."
+                )
+            else:
+                self.append_log(
+                    "Mentalab device disconnected."
+                )
+
+        self.refresh_status()
     def open_compass(self):
         logger.info(
             "Opening Compass portal."
