@@ -29,10 +29,18 @@ logger = logging.getLogger("mentalab.device")
 # CONFIGURATION
 # ============================================================
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+APP_DATA_DIR = (
+    Path.home()
+    / "Library"
+    / "Application Support"
+    / "Compass Mentalab Bridge"
+)
 
-RECORDINGS_DIR = BASE_DIR / "recordings"
-RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+RECORDINGS_DIR = APP_DATA_DIR / "recordings"
+RECORDINGS_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
 
 
 DEVICE_NAME = os.getenv(
