@@ -1,33 +1,12 @@
 # app/main.py
 
 import logging
-
-from fastapi import (
-    FastAPI,
-    HTTPException,
-    Request,
-)
-
-from fastapi.middleware.cors import (
-    CORSMiddleware,
-)
-
-from .logging_config import (
-    configure_logging,
-)
-
-from .device_manager import (
-    mentalab_device_manager,
-)
-
-from .models import (
-    HealthResponse,
-    DeviceStatusResponse,
-    DeviceConnectResponse,
-    ActionResponse,
-    RecordingStartResponse,
-    RecordingStatusResponse,
-)
+from fastapi import ( FastAPI, HTTPException, Request, )
+from fastapi.middleware.cors import ( CORSMiddleware, )
+from .logging_config import ( configure_logging, )
+from .device_manager import ( mentalab_device_manager, )
+from .models import ( HealthResponse, DeviceStatusResponse, DeviceConnectResponse, ActionResponse, RecordingStartResponse, RecordingStatusResponse, )
+from fastapi.responses import FileResponse
 
 
 # ============================================================
@@ -121,8 +100,6 @@ async def root():
         "service": "mentalab-bridge",
         "version": "0.3.0",
     }
-
-
 # ============================================================
 # HEALTH
 # ============================================================
@@ -137,7 +114,6 @@ async def health():
         service="mentalab-bridge",
         version="0.3.0",
     )
-
 
 # ============================================================
 # DEVICE STATUS
@@ -170,6 +146,36 @@ async def device_status():
         ],
     )
 
+@app.get("/api/recording/{recording_id}/download")
+async def download_recording_file(
+    recording_id: str,
+    filename: str,
+):
+    try:
+        file_path = (
+            mentalab_device_manager.get_recording_file(
+                recording_id,
+                filename,
+            )
+        )
+
+        return FileResponse(
+            path=file_path,
+            filename=file_path.name,
+            media_type="text/csv",
+        )
+
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid recording filename.",
+        )
+
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail="Recording file not found.",
+        )
 
 # ============================================================
 # DEVICE CONNECT

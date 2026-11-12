@@ -1089,7 +1089,48 @@ class MentalabDeviceManager:
             for file in files
             if file.is_file()
         ]
+    def get_recording_file(
+            self,
+            recording_id: str,
+            filename: str,
+        ) -> Path:
+            if (
+                not self.recording_id
+                or recording_id != self.recording_id
+                or self.recording_file_prefix is None
+            ):
+                raise FileNotFoundError(
+                    "Recording not found on this bridge."
+                )
 
+            if Path(filename).name != filename:
+                raise ValueError("Invalid filename.")
+
+            prefix = self.recording_file_prefix.name
+
+            allowed_names = {
+                f"{prefix}_ExG.csv",
+                f"{prefix}_Meta.csv",
+                f"{prefix}_Marker.csv",
+                f"{prefix}_ORN.csv",
+            }
+
+            if filename not in allowed_names:
+                raise ValueError(
+                    "This file is not part of the recording."
+                )
+
+            file_path = (RECORDINGS_DIR / filename).resolve()
+
+            if file_path.parent != RECORDINGS_DIR.resolve():
+                raise ValueError("Invalid recording directory.")
+
+            if not file_path.is_file():
+                raise FileNotFoundError(
+                    "Recording file does not exist."
+                )
+
+            return file_path
     # ========================================================
     # LIVE DATA HELPERS
     # ========================================================
