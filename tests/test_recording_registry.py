@@ -21,7 +21,7 @@ class RecordingRegistryTests(unittest.TestCase):
         row = self.registry.list_recordings()[0]
         self.assertTrue(row['legacy'])
         self.assertFalse(row['patientLinked'])
-        self.assertEqual(self.registry.resolve_file(row['recordingId'], self.exg.name), self.exg)
+        self.assertEqual(self.registry.resolve_file(row['recordingId'], self.exg.name).resolve(),self.exg.resolve(),)
         restarted = RecordingRegistry(self.root)
         self.assertEqual(restarted.list_recordings()[0]['recordingId'], row['recordingId'])
 
@@ -33,7 +33,7 @@ class RecordingRegistryTests(unittest.TestCase):
         row = restarted.list_recordings()[0]
         self.assertEqual(row['recordingId'], rid)
         self.assertFalse(row['legacy'])
-        self.assertEqual(restarted.resolve_file(rid, self.exg.name), self.exg)
+        self.assertEqual(restarted.resolve_file(rid, self.exg.name).resolve(),self.exg.resolve(),)
 
     def test_bad_name_and_id_rejected(self):
         rid = self.registry.list_recordings()[0]['recordingId']
