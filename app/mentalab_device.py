@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from explorepy.explore import TOPICS
 
 from .models import MentalabDevice
+from .recording_registry import RecordingRegistry
 
 
 load_dotenv()
@@ -41,6 +42,7 @@ RECORDINGS_DIR.mkdir(
     parents=True,
     exist_ok=True,
 )
+RECORDING_REGISTRY = RecordingRegistry(RECORDINGS_DIR)
 
 
 DEVICE_NAME = os.getenv(
@@ -781,6 +783,7 @@ class MentalabDeviceManager:
         )
 
         try:
+            RECORDING_REGISTRY.register(recording_id, file_prefix, self.recording_started_at)
             self.recording = True
 
             logger.info(
@@ -973,6 +976,13 @@ class MentalabDeviceManager:
                 ).isoformat()
             )
 
+            try:
+                RECORDING_REGISTRY.finalize(
+                    self.recording_id, self.recording_file_prefix, self.recording_stopped_at
+                )
+            except Exception:
+                logger.exception("Recording manifest finalization failed; EEG files remain on disk")
+
             files = (
                 self._find_recording_files()
             )
@@ -1090,47 +1100,20 @@ class MentalabDeviceManager:
             if file.is_file()
         ]
     def get_recording_file(
-            self,
-            recording_id: str,
-            filename: str,
-        ) -> Path:
-            if (
-                not self.recording_id
-                or recording_id != self.recording_id
-                or self.recording_file_prefix is None
-            ):
-                raise FileNotFoundError(
-                    "Recording not found on this bridge."
-                )
+        self, recording_id: str, filename: str, allow_history: bool = False
+    ) -> Path:
+        # Only the current in-memory recording remains accessible without
+        # a history API token, preserving the pre-existing download behavior.
+        if not allow_history and recording_id != self.recording_id:
+            raise FileNotFoundError("Historical recording requires authorization")
+        if self.recording:
+            # Avoid exposing incompletely written files.
+            raise FileNotFoundError("Recording must be stopped before downloading")
+        return RECORDING_REGISTRY.resolve_file(recording_id, filename)
 
-            if Path(filename).name != filename:
-                raise ValueError("Invalid filename.")
+    def get_recording_history(self) -> list[dict]:
+        return RECORDING_REGISTRY.list_recordings()
 
-            prefix = self.recording_file_prefix.name
-
-            allowed_names = {
-                f"{prefix}_ExG.csv",
-                f"{prefix}_Meta.csv",
-                f"{prefix}_Marker.csv",
-                f"{prefix}_ORN.csv",
-            }
-
-            if filename not in allowed_names:
-                raise ValueError(
-                    "This file is not part of the recording."
-                )
-
-            file_path = (RECORDINGS_DIR / filename).resolve()
-
-            if file_path.parent != RECORDINGS_DIR.resolve():
-                raise ValueError("Invalid recording directory.")
-
-            if not file_path.is_file():
-                raise FileNotFoundError(
-                    "Recording file does not exist."
-                )
-
-            return file_path
     # ========================================================
     # LIVE DATA HELPERS
     # ========================================================

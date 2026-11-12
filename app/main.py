@@ -1,7 +1,9 @@
 # app/main.py
 
 import logging
-from fastapi import ( FastAPI, HTTPException, Request, )
+import os
+import secrets
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import ( CORSMiddleware, )
 from .logging_config import ( configure_logging, )
 from .device_manager import ( mentalab_device_manager, )
@@ -146,16 +148,34 @@ async def device_status():
         ],
     )
 
+def _history_token_valid(candidate: str | None) -> bool:
+    expected = os.getenv("MENTALAB_HISTORY_API_TOKEN", "")
+    return len(expected) >= 32 and bool(candidate) and secrets.compare_digest(candidate, expected)
+
+
+@app.get("/api/recordings")
+async def list_recordings(
+    x_mentalab_history_token: str | None = Header(default=None),
+):
+    if not os.getenv("MENTALAB_HISTORY_API_TOKEN"):
+        raise HTTPException(status_code=503, detail="Recording history is not configured")
+    if not _history_token_valid(x_mentalab_history_token):
+        raise HTTPException(status_code=403, detail="Recording history access denied")
+    return {"ok": True, "recordings": mentalab_device_manager.get_recording_history()}
+
+
 @app.get("/api/recording/{recording_id}/download")
 async def download_recording_file(
     recording_id: str,
     filename: str,
+    x_mentalab_history_token: str | None = Header(default=None),
 ):
     try:
         file_path = (
             mentalab_device_manager.get_recording_file(
                 recording_id,
                 filename,
+                allow_history=_history_token_valid(x_mentalab_history_token),
             )
         )
 
